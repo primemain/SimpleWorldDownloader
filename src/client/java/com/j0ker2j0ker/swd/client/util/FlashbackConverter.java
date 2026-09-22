@@ -5,6 +5,7 @@ import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.nbt.*;
 import net.minecraft.network.FriendlyByteBuf;
 import net.minecraft.world.level.block.Block;
+import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.entity.BlockEntityType;
 import net.minecraft.world.level.block.state.BlockState;
 
@@ -43,8 +44,8 @@ public class FlashbackConverter {
     /** Converts the recording and returns the new world folder. */
     public static Path convert(Path zip, Path savesDir, Consumer<String> status) throws IOException {
         status.accept("Reading recording...");
-        Map<Long, byte[]> latest = readChunkPackets(zip);
-        if (latest.isEmpty()) throw new IOException("No chunks found in this recording");
+        Map<Long, List<byte[]>> versions = readChunkPackets(zip);
+        if (versions.isEmpty()) throw new IOException("No chunks found in this recording");
 
         String name = zip.getFileName().toString().replaceAll("(?i)\\.zip$", "").replaceAll("[\\\\/:*?\"<>|]", "_");
         Path world = savesDir.resolve(name);
@@ -54,11 +55,14 @@ public class FlashbackConverter {
         Files.createDirectories(regionDir);
 
         Map<Long, List<CompoundTag>> regions = new HashMap<>();
-        int done = 0, failed = 0;
+        int done = 0, failed = 0, skipped = 0;
         long sumX = 0, sumZ = 0;
-        for (byte[] data : latest.values()) {
+        for (List<byte[]> list : versions.values()) {
             try {
-                CompoundTag chunk = parseChunk(data);
+                // Newest real (not floating stone) version of this chunk
+                CompoundTag chunk = null;
+                for (int v = list.size() - 1; v >= 0 && chunk == null; v--) chunk = parseChunk(list.get(v));
+                if (chunk == null) { skipped++; continue; }
                 int x = chunk.getIntOr("xPos", 0), z = chunk.getIntOr("zPos", 0);
                 sumX += x; sumZ += z;
                 regions.computeIfAbsent(((long) (x >> 5) << 32) | ((z >> 5) & 0xFFFFFFFFL), k -> new ArrayList<>()).add(chunk);
@@ -66,7 +70,7 @@ public class FlashbackConverter {
             } catch (Exception e) {
                 failed++;
             }
-            if (done % 100 == 0) status.accept("Converting chunks: " + done + " / " + latest.size());
+            if (done % 100 == 0) status.accept("Converting chunks: " + done + " / " + versions.size());
         }
 
         status.accept("Writing world...");
@@ -80,12 +84,13 @@ public class FlashbackConverter {
         writeLevelDat(world, world.getFileName().toString(), spawnX, 100, spawnZ);
 
         status.accept("Done! Saved " + done + " chunks to world \"" + world.getFileName() + "\""
+                + " (removed " + skipped + " floating stone chunks)"
                 + (failed > 0 ? " (" + failed + " chunks failed)" : ""));
         return world;
     }
 
-    private static Map<Long, byte[]> readChunkPackets(Path zip) throws IOException {
-        Map<Long, byte[]> latest = new LinkedHashMap<>(); // newest copy of every chunk wins
+    private static Map<Long, List<byte[]>> readChunkPackets(Path zip) throws IOException {
+        Map<Long, List<byte[]>> versions = new LinkedHashMap<>(); // every copy of every chunk, oldest first
         try (ZipFile zf = new ZipFile(zip.toFile())) {
             List<ZipEntry> caches = new ArrayList<>();
             zf.stream().filter(e -> e.getName().startsWith("level_chunk_caches/") && !e.isDirectory()).forEach(caches::add);
@@ -100,12 +105,12 @@ public class FlashbackConverter {
                         FriendlyByteBuf buf = new FriendlyByteBuf(Unpooled.wrappedBuffer(data));
                         buf.readVarInt();
                         int x = buf.readInt(), z = buf.readInt();
-                        latest.put(((long) x << 32) | (z & 0xFFFFFFFFL), data);
+                        versions.computeIfAbsent(((long) x << 32) | (z & 0xFFFFFFFFL), k -> new ArrayList<>()).add(data);
                     }
                 }
             }
         }
-        return latest;
+        return versions;
     }
 
     private static int cacheIndex(ZipEntry e) {
@@ -134,6 +139,7 @@ public class FlashbackConverter {
             int[] biomes = readContainer(sectionsBuf, 64, 3);
             sections.add(new int[][]{blocks, biomes});
         }
+        if (isFloatingStone(sections)) return null;
         int minSection = sections.size() == 24 ? -4 : 0;
 
         ListTag blockEntities = new ListTag();
@@ -181,6 +187,48 @@ public class FlashbackConverter {
         structures.put("starts", new CompoundTag());
         root.put("structures", structures);
         return root;
+    }
+
+    /**
+     * The server fills far away chunks with fake floating stone.
+     * Fake chunks are only stone, and most of the stone blocks don't touch any other block.
+     */
+    private static boolean isFloatingStone(List<int[][]> sections) {
+        int stone = Block.BLOCK_STATE_REGISTRY.getId(Blocks.STONE.defaultBlockState());
+        int height = sections.size() * 16;
+        boolean[] solid = new boolean[16 * 16 * height];
+        int count = 0;
+        for (int s = 0; s < sections.size(); s++) {
+            int[] blocks = sections.get(s)[0];
+            for (int i = 0; i < 4096; i++) {
+                int id = blocks[i];
+                BlockState state = Block.BLOCK_STATE_REGISTRY.byId(id);
+                if (state == null || state.isAir()) continue;
+                if (id != stone) return false; // has other blocks -> real chunk
+                int x = i & 15, z = (i >> 4) & 15, y = s * 16 + (i >> 8);
+                solid[(y * 16 + z) * 16 + x] = true;
+                count++;
+            }
+        }
+        if (count == 0) return false;
+
+        int alone = 0;
+        for (int y = 0; y < height; y++) {
+            for (int z = 0; z < 16; z++) {
+                for (int x = 0; x < 16; x++) {
+                    if (!solid[(y * 16 + z) * 16 + x]) continue;
+                    boolean touching =
+                            (x > 0 && solid[(y * 16 + z) * 16 + x - 1]) ||
+                            (x < 15 && solid[(y * 16 + z) * 16 + x + 1]) ||
+                            (z > 0 && solid[(y * 16 + z - 1) * 16 + x]) ||
+                            (z < 15 && solid[(y * 16 + z + 1) * 16 + x]) ||
+                            (y > 0 && solid[((y - 1) * 16 + z) * 16 + x]) ||
+                            (y < height - 1 && solid[((y + 1) * 16 + z) * 16 + x]);
+                    if (!touching) alone++;
+                }
+            }
+        }
+        return alone * 2 > count; // more than half the stone is floating alone
     }
 
     private static int[] readContainer(FriendlyByteBuf buf, int size, int maxIndirect) {
