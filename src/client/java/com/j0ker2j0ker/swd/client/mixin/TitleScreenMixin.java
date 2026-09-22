@@ -21,6 +21,6 @@ public abstract class TitleScreenMixin extends Screen {
     private void swd$addFlashbackButton(CallbackInfo ci) {
         this.addRenderableWidget(Button.builder(Component.literal("Flashback → World"),
                         b -> this.minecraft.setScreen(new FlashbackConvertScreen(this)))
-                .bounds(4, 4, 120, 20).build());
+                .bounds(this.width / 2 + 104, this.height / 4 + 48, 90, 20).build());
     }
 }
