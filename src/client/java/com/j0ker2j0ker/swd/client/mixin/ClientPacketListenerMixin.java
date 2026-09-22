@@ -1,5 +1,6 @@
 package com.j0ker2j0ker.swd.client.mixin;
 
+import com.j0ker2j0ker.swd.client.util.ChunkFilter;
 import com.j0ker2j0ker.swd.client.util.SaveManager;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientPacketListener;
@@ -25,12 +26,18 @@ public abstract class ClientPacketListenerMixin {
         if(!SaveManager.isSaving) return;
 
         Minecraft mc = Minecraft.getInstance();
+        // Removed the "isLocalServer / no server" check so chunks also get saved
+        // while watching a Flashback or Replay Mod recording.
         int chunkX = packet.getX();
         int chunkZ = packet.getZ();
         LevelChunk wc = this.level.getChunkSource().getChunk(chunkX, chunkZ, false);
         if (wc == null || wc.isEmpty() || mc.level == null) return;
 
-        SaveManager.saveChunkToRegion(SaveManager.path, wc, true, mc.level.dimension());
+        // Don't save fake floating stone chunks (and don't let them overwrite real ones)
+        if (ChunkFilter.isFloatingStone(wc)) return;
+
+        SaveManager.saveChunkToRegion(SaveManager.path, wc, false, mc.level.dimension());
+        ChunkFilter.markSaved(wc);
     }
 
     @Inject(method = "handleAwardStats", at = @At("TAIL"))
