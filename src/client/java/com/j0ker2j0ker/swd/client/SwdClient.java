@@ -1,6 +1,7 @@
 package com.j0ker2j0ker.swd.client;
 
 import com.j0ker2j0ker.swd.client.screen.SwdConfigScreen;
+import com.j0ker2j0ker.swd.client.util.ChunkFilter;
 import com.j0ker2j0ker.swd.client.util.SaveManager;
 import com.j0ker2j0ker.swd.client.util.SwdBossBar;
 import com.j0ker2j0ker.swd.client.util.SwdConfig;
@@ -87,6 +88,15 @@ public class SwdClient implements ClientModInitializer {
         HudElementRegistry.addLast(Identifier.fromNamespaceAndPath(MOD_ID, "bossbar"), (graphics, tickCounter) -> {
             Minecraft client = Minecraft.getInstance();
             SwdBossBar.render(graphics, client.font, client.getWindow().getGuiScaledWidth());
+        });
+
+        // "Saved: X chunks" counter in the top right corner while downloading
+        HudElementRegistry.addLast(Identifier.fromNamespaceAndPath(MOD_ID, "chunk_counter"), (graphics, tickCounter) -> {
+            if (!SaveManager.isSaving) return;
+            Minecraft client = Minecraft.getInstance();
+            String text = "Saved: " + ChunkFilter.savedCount() + " chunks";
+            int x = client.getWindow().getGuiScaledWidth() - client.font.width(text) - 4;
+            graphics.text(client.font, Component.literal(text), x, 4, 0xFF55FF55);
         });
 
         registerCommands();
