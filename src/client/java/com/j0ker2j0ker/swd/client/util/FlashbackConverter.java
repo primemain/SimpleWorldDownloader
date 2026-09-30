@@ -10,10 +10,13 @@ import net.minecraft.world.level.block.entity.BlockEntityType;
 import net.minecraft.world.level.block.state.BlockState;
 
 import java.io.*;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.*;
 import java.util.function.Consumer;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.zip.DeflaterOutputStream;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
@@ -28,6 +31,8 @@ public class FlashbackConverter {
 
     // The world is written in the 1.21.11 format on purpose: 26.2 upgrades it when you open it.
     private static final int DATA_VERSION = 4671; // 1.21.11
+    // Recordings must come from this version, other versions store chunks differently.
+    private static final int RECORDING_DATA_VERSION = 4903; // 26.2
 
     // Biome order the server sends (vanilla, alphabetical)
     private static final String[] BIOMES = {
@@ -46,6 +51,7 @@ public class FlashbackConverter {
     /** Converts the recording and returns the new world folder. */
     public static Path convert(Path zip, Path savesDir, Consumer<String> status) throws IOException {
         status.accept("Reading recording...");
+        checkVersion(zip);
         Map<Long, List<byte[]>> versions = readChunkPackets(zip);
         if (versions.isEmpty()) throw new IOException("No chunks found in this recording");
 
@@ -89,6 +95,24 @@ public class FlashbackConverter {
                 + " (removed " + skipped + " floating stone chunks)"
                 + (failed > 0 ? " (" + failed + " chunks failed)" : ""));
         return world;
+    }
+
+    /** Stops with a clear message if the recording was made on another Minecraft version. */
+    private static void checkVersion(Path zip) throws IOException {
+        try (ZipFile zf = new ZipFile(zip.toFile())) {
+            ZipEntry meta = zf.getEntry("metadata.json");
+            if (meta == null) return;
+            String json;
+            try (InputStream in = zf.getInputStream(meta)) {
+                json = new String(in.readAllBytes(), StandardCharsets.UTF_8);
+            }
+            Matcher dataVersion = Pattern.compile("\"data_version\"\\s*:\\s*(\\d+)").matcher(json);
+            if (dataVersion.find() && Integer.parseInt(dataVersion.group(1)) != RECORDING_DATA_VERSION) {
+                Matcher name = Pattern.compile("\"version_string\"\\s*:\\s*\"([^\"]+)\"").matcher(json);
+                String version = name.find() ? name.group(1) : "another version";
+                throw new IOException("This recording is from " + version + ". Convert it in your " + version + " profile.");
+            }
+        }
     }
 
     private static Map<Long, List<byte[]>> readChunkPackets(Path zip) throws IOException {
