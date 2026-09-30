@@ -22,9 +22,11 @@ import java.util.zip.ZipFile;
  * Turns a Flashback recording (.zip) straight into a void world.
  * It reads the chunk cache (level_chunk_caches) inside the recording,
  * so it does not need to play the replay.
+ * Only works for recordings made on 26.2.
  */
 public class FlashbackConverter {
 
+    // The world is written in the 1.21.11 format on purpose: 26.2 upgrades it when you open it.
     private static final int DATA_VERSION = 4671; // 1.21.11
 
     // Biome order the server sends (vanilla, alphabetical)
@@ -135,6 +137,7 @@ public class FlashbackConverter {
         List<int[][]> sections = new ArrayList<>();
         while (sectionsBuf.isReadable()) {
             sectionsBuf.readShort(); // non-air block count
+            sectionsBuf.readShort(); // fluid count (new in 26.2)
             int[] blocks = readContainer(sectionsBuf, 4096, 8);
             int[] biomes = readContainer(sectionsBuf, 64, 3);
             sections.add(new int[][]{blocks, biomes});
